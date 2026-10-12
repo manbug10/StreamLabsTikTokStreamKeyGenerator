@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import base64
-import socket
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -13,11 +12,13 @@ import requests
 class TokenRetriever:
     STREAMLABS_API_URL = "https://streamlabs.com/api/v5/slobs/auth/data"
 
-    def __init__(self):
+    def __init__(self, chrome_binary: str | None = None):
         self.code_verifier = self._generate_code_verifier()
         self.code_challenge = self._generate_code_challenge(self.code_verifier)
         self._auth_code: str | None = None
         self._server_event = threading.Event()
+        # Optional custom browser binary (e.g. Chrome path on Linux).
+        self.chrome_binary = chrome_binary
 
     # ------------------------------------------------------------------ #
     #  PKCE helpers                                                        #
@@ -33,17 +34,6 @@ class TokenRetriever:
         """SHA-256 of the verifier, base64url-encoded (no padding)."""
         digest = hashlib.sha256(verifier.encode()).digest()
         return base64.urlsafe_b64encode(digest).decode().rstrip("=")
-
-    # ------------------------------------------------------------------ #
-    #  Port helper                                                         #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _find_free_port() -> int:
-        """Bind to port 0 and let the OS pick a free ephemeral port."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
 
     # ------------------------------------------------------------------ #
     #  Local callback server                                               #
@@ -82,12 +72,6 @@ class TokenRetriever:
 
         return _CallbackHandler
 
-    def _start_callback_server(self, port: int) -> HTTPServer:
-        server = HTTPServer(("127.0.0.1", port), self._make_handler())
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        return server
-
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
     # ------------------------------------------------------------------ #
@@ -103,7 +87,10 @@ class TokenRetriever:
         Returns:
             The oauth_token string on success, or None on failure.
         """
-        port = self._find_free_port()
+        # Bind directly to port 0: the OS assigns a free ephemeral port and we
+        # keep the socket open (no TOCTOU race between finding and binding it).
+        server = HTTPServer(("127.0.0.1", 0), self._make_handler())
+        port = server.server_address[1]
 
         auth_url = (
             f"https://streamlabs.com/slobs/login?"
@@ -112,10 +99,14 @@ class TokenRetriever:
             f"&code_challenge={self.code_challenge}&code_flow=true"
         )
 
-        server = self._start_callback_server(port)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
 
         print(f"Opening browser for Streamlabs login (callback on port {port})…")
-        webbrowser.open(auth_url)
+        if self.chrome_binary:
+            controller = webbrowser.get(f"{self.chrome_binary} %s")
+            controller.open(auth_url)
+        else:
+            webbrowser.open(auth_url)
 
         completed = self._server_event.wait(timeout=timeout)
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -155,9 +146,9 @@ class TokenRetriever:
         }
 
         try:
-            response = requests.get(
+            response = requests.post(
                 self.STREAMLABS_API_URL,
-                params=params,
+                data=params,
                 headers=headers,
                 timeout=30,
             )
@@ -180,5 +171,6 @@ class TokenRetriever:
             return None
 
         token = data["data"].get("oauth_token")
-        print(f"Got Streamlabs OAuth token: {token}")
+        if token:
+            print("Got Streamlabs OAuth token successfully.")
         return token

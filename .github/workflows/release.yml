@@ -41,7 +41,7 @@ jobs:
           echo "RELEASE=${{ matrix.build_type }}" >> $env:GITHUB_ENV
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
@@ -51,7 +51,7 @@ jobs:
           if (Test-Path requirements.txt) {
             pip install -r requirements.txt
           }
-          "__version__ = '${{ github.event.inputs.version }}'" | Out-File -FilePath _version.py -Encoding utf8
+          [System.IO.File]::WriteAllLines("_version.py", @("__version__ = '${{ github.event.inputs.version }}'"), (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Build Executable
         run: |
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 

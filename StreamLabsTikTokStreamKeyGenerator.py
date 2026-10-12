@@ -9,40 +9,56 @@ import traceback
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QGroupBox, QPushButton, QLineEdit, QLabel, QCheckBox,
                               QListWidget, QMessageBox, QListWidgetItem, QSizePolicy)
-from PySide6.QtCore import Signal, QTimer
+from PySide6.QtCore import Signal, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from Stream import Stream
 from TokenRetriever import TokenRetriever
 from Updater import VersionChecker
 from packaging import version
 
+
+def _app_dir() -> str:
+    """Directory of the script (or exe when frozen) so config lives next to it."""
+    if getattr(sys, "frozen", False):  # e.g. Nuitka standalone builds
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 class StreamApp(QMainWindow):
     update_suggestions = Signal(list)
-    update_ui = Signal()
     _token_ready = Signal(str)
     _token_error = Signal(str)
     _restore_local_btn = Signal()
     _restore_online_btn = Signal()
+    _search_error = Signal(str)
 
     def __init__(self):
         super().__init__()
         self.stream = None
         self.game_mask_id = ""
+        self.suppress_donation_reminder = False
+        self._search_seq = 0
+        self._pending_search_text = ""
         self.init_ui()
         self.load_config()
-        
-        QTimer.singleShot(3000, lambda: [
-            self.show_donation_reminder(),
-            QTimer.singleShot(3000, self.check_updates_on_startup)
-        ])
+
+        # Show donation reminder first; only check updates after it is closed,
+        # so two modal dialogs never stack on top of each other.
+        QTimer.singleShot(3000, self._startup_dialogs)
 
         # Connect signals
         self.update_suggestions.connect(self.update_suggestions_list)
-        self.update_ui.connect(self.handle_ui_update)
         self._token_ready.connect(self._apply_token)
         self._token_error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
         self._restore_local_btn.connect(self._do_restore_local_btn)
         self._restore_online_btn.connect(self._do_restore_online_btn)
+        self._search_error.connect(
+            lambda msg: QMessageBox.critical(self, "Search Error", msg)
+        )
+
+    def _startup_dialogs(self):
+        self.show_donation_reminder()
+        QTimer.singleShot(500, self.check_updates_on_startup)
 
     def init_ui(self):
         self.setWindowTitle("StreamLabs TikTok Stream Key Generator")
@@ -288,7 +304,9 @@ class StreamApp(QMainWindow):
         
         self.donate_btn = QPushButton("☕ Donate")
         self.donate_btn.setToolTip("Support the developer")
-        self.donate_btn.clicked.connect(lambda: QDesktopServices.openUrl("https://buymeacoffee.com/loukious"))
+        self.donate_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://buymeacoffee.com/loukious"))
+        )
         bottom_buttons.addWidget(self.donate_btn)
 
         self.monitor_btn = QPushButton("Open Live Monitor")
@@ -296,30 +314,37 @@ class StreamApp(QMainWindow):
         bottom_buttons.addWidget(self.monitor_btn)
 
     def toggle_token_visibility(self):
-        """Toggle token visibility and update emoji"""
+        """Toggle token visibility and update icon."""
         if self.token_entry.echoMode() == QLineEdit.Normal:
             self.token_entry.setEchoMode(QLineEdit.Password)
-            self.toggle_token_btn.setText("👁️")  # Closed eye
+            self.toggle_token_btn.setText("🔒")
             self.toggle_token_btn.setToolTip("Show token")
         else:
             self.token_entry.setEchoMode(QLineEdit.Normal)
-            self.toggle_token_btn.setText("👁️‍🗨️")  # Eye with speech bubble (visible)
+            self.toggle_token_btn.setText("👁️")
             self.toggle_token_btn.setToolTip("Hide token")
 
     def handle_token_change(self):
-        self.go_live_btn.setEnabled(bool(self.token_entry.text()))
+        # Keep Go Live enabled only when we have a token AND the account allows it.
+        can_live = self.can_go_live.text().lower() == "yes"
+        self.go_live_btn.setEnabled(bool(self.token_entry.text()) and can_live)
+
+    @property
+    def config_path(self):
+        return os.path.join(_app_dir(), "config.json")
 
     def load_config(self):
         try:
-            with open("config.json", "r") as file:
+            with open(self.config_path, "r") as file:
                 data = json.load(file)
-        except:
+        except (OSError, ValueError):
+            # Missing/unreadable/corrupt config — start from defaults.
             data = {}
         self.token_entry.setText(data.get("token", ""))
         self.stream_title.setText(data.get("title", ""))
         self.game_category.setText(data.get("game", ""))
         self.mature_checkbox.setChecked(data.get("audience_type", "0") == "1")
-        self.suppress_donation_reminder = data.get("suppress_donation_reminder", False)
+        self.suppress_donation_reminder = bool(data.get("suppress_donation_reminder", False))
 
         self.refresh_account_info()
 
@@ -331,8 +356,15 @@ class StreamApp(QMainWindow):
             "token": self.token_entry.text(),
             "suppress_donation_reminder": self.suppress_donation_reminder
         }
-        with open("config.json", "w") as file:
-            json.dump(data, file)
+        try:
+            with open(self.config_path, "w") as file:
+                json.dump(data, file)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Config Not Saved",
+                f"Could not write configuration file:\n{e}"
+            )
+            return
         if show_message:
             QMessageBox.information(self, "Config Saved", "Configuration saved successfully!")
 
@@ -345,28 +377,31 @@ class StreamApp(QMainWindow):
                 
                 app_status = info.get("application_status", {})
                 self.app_status.setText(app_status.get("status", "Unknown"))
-                
-                self.can_go_live.setText(str(info.get("can_be_live", False)))
-                
-                if not info.get("can_be_live", False):
-                    self.stream_title.setEnabled(False)
-                    self.game_category.setEnabled(False)
-                    self.mature_checkbox.setEnabled(False)
-                    self.go_live_btn.setEnabled(False)
-                else:
-                    self.stream_title.setEnabled(True)
-                    self.game_category.setEnabled(True)
-                    self.mature_checkbox.setEnabled(True)
-                    self.go_live_btn.setEnabled(True)
+
+                can_live = bool(info.get("can_be_live", False))
+                self.can_go_live.setText("Yes" if can_live else "No")
+
+                for widget in (self.stream_title, self.game_category, self.mature_checkbox):
+                    widget.setEnabled(can_live)
+                # Go Live requires both account permission and a non-empty token.
+                self.go_live_btn.setEnabled(can_live and bool(self.token_entry.text()))
 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load account info: {str(e)}")
     
     def refresh_account_info(self):
-        if self.token_entry.text():
-            self.stream = Stream(self.token_entry.text())
+        token = self.token_entry.text()
+        if token:
+            # Only recreate the Stream object when the token actually changed,
+            # otherwise we would lose the id of an active stream.
+            if self.stream is None or getattr(self, "_stream_token", None) != token:
+                self.stream = Stream(token)
+                self._stream_token = token
             self.load_account_info()
             self.fetch_game_mask_id(self.game_category.text())
+        else:
+            self.stream = None
+            self._stream_token = None
         self.save_config(False)
 
     def _do_restore_local_btn(self):
@@ -412,10 +447,9 @@ class StreamApp(QMainWindow):
                 '~/Library/Application Support/slobs-client/Local Storage/leveldb/*.log'
             )
         else:
-            QTimer.singleShot(0, lambda: QMessageBox.critical(
-                self, "Error", "Unsupported operating system for local token retrieval."
-            ))
-            return None
+            raise RuntimeError(
+                "Local token retrieval is not supported on this operating system."
+            )
 
         files = sorted(glob.glob(path_pattern), key=os.path.getmtime, reverse=True)
         token_pattern = re.compile(r'"apiToken":"([a-f0-9]+)"', re.IGNORECASE)
@@ -437,7 +471,10 @@ class StreamApp(QMainWindow):
         self.load_online_btn.setEnabled(False)
         self.load_online_btn.setText("Waiting for login…")
 
-        retriever = TokenRetriever()
+        binary_path = None
+        if hasattr(self, "binary_location_entry"):
+            binary_path = self.binary_location_entry.text().strip() or None
+        retriever = TokenRetriever(chrome_binary=binary_path)
 
         def _run():
             try:
@@ -464,29 +501,54 @@ class StreamApp(QMainWindow):
         self.fetch_game_mask_id(self.game_category.text())
 
     def fetch_game_mask_id(self, game_name):
-        if self.stream:
-            try:
-                categories = self.stream.search(game_name)
-                for category in categories:
-                    if category['full_name'] == game_name:
-                        self.game_mask_id = category['game_mask_id']
-                        return
-                self.game_mask_id = ""
-            except Exception as e:
-                QMessageBox.warning(self, "Search Error", f"Failed to search games: {str(e)}")
+        if not self.stream or not game_name:
+            self.game_mask_id = ""
+            return
+        try:
+            categories = self.stream.search(game_name)
+            target = game_name.lower()
+            for category in categories:
+                full_name = category.get('full_name', '')
+                # The API truncates names to 25 chars, so compare prefixes too.
+                if (full_name.lower() == target or
+                        target.startswith(full_name.lower()[:25])):
+                    self.game_mask_id = category.get('game_mask_id', '')
+                    return
+            self.game_mask_id = ""
+        except Exception as e:
+            QMessageBox.warning(self, "Search Error", f"Failed to search games: {str(e)}")
 
     def handle_game_search(self, text):
-        if text and self.stream:
-            threading.Thread(target=self.search_games, args=(text,)).start()
-        else:
+        if not text or not self.stream:
             self.suggestions_list.hide()
+            return
+        # Debounce: restart the timer so we only query once typing pauses.
+        self._pending_search_text = text
+        if not hasattr(self, "_search_timer"):
+            self._search_timer = QTimer(self)
+            self._search_timer.setSingleShot(True)
+            self._search_timer.timeout.connect(self._run_pending_search)
+        self._search_timer.start(400)
 
-    def search_games(self, text):
+    def _run_pending_search(self):
+        text = self._pending_search_text
+        if not text or not self.stream:
+            return
+        self._search_seq += 1
+        seq = self._search_seq
+        threading.Thread(
+            target=self.search_games, args=(text, seq), daemon=True
+        ).start()
+
+    def search_games(self, text, seq):
         try:
             categories = self.stream.search(text)
-            self.update_suggestions.emit(categories)
         except Exception as e:
-            QMessageBox.critical(self, "Search Error", f"Game search failed: {str(e)}")
+            self._search_error.emit(f"Game search failed: {str(e)}")
+            return
+        # Drop stale responses: only show results for the most recent query.
+        if seq == self._search_seq:
+            self.update_suggestions.emit(categories)
 
     def update_suggestions_list(self, categories):
         self.suggestions_list.clear()
@@ -500,6 +562,19 @@ class StreamApp(QMainWindow):
         self.suggestions_list.hide()
 
     def start_stream(self):
+        if not self.stream:
+            QMessageBox.warning(self, "Missing Token", "Please load a token first.")
+            return
+        if not self.stream_title.text().strip():
+            QMessageBox.warning(self, "Missing Title", "Please enter a stream title.")
+            return
+        if self.game_category.text().strip() and not self.game_mask_id:
+            QMessageBox.warning(
+                self, "Invalid Category",
+                "The selected game category was not recognized.\n"
+                'Pick one from the suggestions list or leave it empty for "Other".'
+            )
+            return
         try:
             audience_type = "1" if self.mature_checkbox.isChecked() else "0"
             stream_url, stream_key = self.stream.start(
@@ -522,14 +597,17 @@ class StreamApp(QMainWindow):
 
     def end_stream(self):
         try:
-            if self.stream.end():
-                self.stream_url.clear()
-                self.stream_key.clear()
-                self.end_live_btn.setEnabled(False)
-                self.go_live_btn.setEnabled(True)
+            success = self.stream.end() if self.stream else False
+            if success:
                 QMessageBox.information(self, "Live Ended", "Stream ended successfully!")
             else:
                 QMessageBox.critical(self, "Error", "Failed to end stream!")
+            # Reset UI regardless: the local key/URL are no longer usable.
+            self.stream_url.clear()
+            self.stream_key.clear()
+            self.end_live_btn.setEnabled(False)
+            self.go_live_btn.setEnabled(bool(self.token_entry.text()) and
+                                        self.can_go_live.text().lower() == "yes")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to end stream: {str(e)}")
 
@@ -551,8 +629,12 @@ class StreamApp(QMainWindow):
 
 
     def check_updates_on_startup(self):
-        """Non-blocking update check with GUI notification"""
-        update_info = VersionChecker.check_update()
+        """Update check with GUI notification; failures are silently skipped."""
+        try:
+            update_info = VersionChecker.check_update()
+        except Exception:
+            # Network/API hiccup — don't bother the user at startup.
+            return
 
         if update_info and version.parse(update_info["latest"]) > version.parse(update_info["current"]):
             msg = QMessageBox(self)
@@ -568,7 +650,7 @@ class StreamApp(QMainWindow):
             msg.setDefaultButton(QMessageBox.Yes)
             
             if msg.exec() == QMessageBox.Yes:
-                QDesktopServices.openUrl(update_info["url"])
+                QDesktopServices.openUrl(QUrl(update_info["url"]))
 
     def show_donation_reminder(self):
         
@@ -598,13 +680,10 @@ class StreamApp(QMainWindow):
             self.save_config(False)
         # Handle button clicks
         if msg.clickedButton() == donate_btn:
-            QDesktopServices.openUrl("https://buymeacoffee.com/loukious")
+            QDesktopServices.openUrl(QUrl("https://buymeacoffee.com/loukious"))
 
     def open_live_monitor(self):
-        QDesktopServices.openUrl("https://livecenter.tiktok.com/live_monitor?lang=en-US")
-
-    def handle_ui_update(self):
-        self.load_account_info()
+        QDesktopServices.openUrl(QUrl("https://livecenter.tiktok.com/live_monitor?lang=en-US"))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -1,0 +1,5 @@
+# Build-only dependencies (used by .github/workflows/release.yml)
+# NOTE: the "clang" PyPI package was removed — it ships libclang *bindings*,
+# not the compiler. GitHub runners already ship a clang toolchain for
+# Nuitka's --clang flag.
+nuitka>=2.6.9

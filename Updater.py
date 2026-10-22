@@ -1,27 +1,41 @@
-from _version import __version__
-from packaging import version
+from __future__ import annotations
+
+import traceback
+
 import requests
+from packaging import version
+
+try:
+    from _version import __version__
+except ImportError:
+    # Running from source: _version.py is generated only during CI builds.
+    # Fall back to 0.0.0 so the app does not crash with ModuleNotFoundError.
+    __version__ = "0.0.0"
 
 
 class VersionChecker:
-    REPO = "Loukious/StreamlabsTikTokStreamKeyGenerator"
-    
+    REPO = "manbug10/StreamLabsTikTokStreamKeyGenerator"
+
     @classmethod
     def check_update(cls):
         try:
             response = requests.get(
                 f"https://api.github.com/repos/{cls.REPO}/releases/latest",
-                timeout=5
+                timeout=10
             )
             release = response.json()
-            latest = release["tag_name"].lstrip('v')
-            
+            latest = str(release.get("tag_name", "")).removeprefix("v")
+
+            if not latest:
+                return None
+
             if version.parse(latest) > version.parse(__version__):
                 return {
                     "current": __version__,
                     "latest": latest,
-                    "url": release["html_url"],
+                    "url": release.get("html_url", f"https://github.com/{cls.REPO}/releases/latest"),
                     "notes": release.get("body", "")
                 }
         except Exception:
+            traceback.print_exc()
             return None

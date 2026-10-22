@@ -237,3 +237,5 @@ jobs:
           tag_name: "v${{ github.event.inputs.version }}"
           body: ${{ github.event.inputs.changelog }}
           files: "artifacts/**/*.zip"
+
+# Registered to GitHub Actions (enable trigger push)

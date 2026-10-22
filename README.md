@@ -30,6 +30,20 @@ This application is a simple tool that generates a TikTok Live Stream Key for OB
 
 > **Note:** the `_version.py` file is generated automatically during CI builds. When running from source the app falls back to version `0.0.0`, so the update checker simply won't notify you — this is expected.
 
+## Building & publishing a release
+Releases are built automatically by GitHub Actions (Windows Release/Debug, macOS x86_64/arm64 and Linux):
+
+1. Go to the [**Actions** tab](../../actions) and select the **Release** workflow.
+2. Click **Run workflow**, choose branch `main`, and fill in:
+   - **version**: the new version number without the `v` prefix (e.g., `2.1.0`)
+   - **changelog**: the release notes text
+3. Click **Run workflow**. Nuitka compiles each platform (~20–40 min).
+4. When all jobs finish, the **release job** creates the `v<version>` tag and publishes a GitHub Release with all 5 `.zip` binaries attached automatically.
+
+> **Note:** you never need to create the tag manually — it is only created by the release job after every build succeeds, so a failed build never leaves a broken tag behind.
+
+To build locally instead, install `requirements-build.txt` and run Nuitka with the flags shown in `.github/workflows/release.yml`.
+
 ## Security note
 The Streamlabs API token is stored **in plain text** in `config.json` next to the application (the file is created automatically and access is restricted to your user where the OS allows it). Anyone with access to that file can read your token, so keep it safe.
 

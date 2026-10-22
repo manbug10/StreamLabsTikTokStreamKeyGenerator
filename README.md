@@ -17,9 +17,25 @@ This application is a simple tool that generates a TikTok Live Stream Key for OB
 ## Download
 - Download the latest release from [here](../../releases/latest)
 
+## Run from source
+1. Install [Python 3.9+](https://www.python.org/downloads/) (3.11+ recommended).
+2. Install the dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Run the application:
+   ```
+   python StreamLabsTikTokStreamKeyGenerator.py
+   ```
+
+> **Note:** the `_version.py` file is generated automatically during CI builds. When running from source the app falls back to version `0.0.0`, so the update checker simply won't notify you — this is expected.
+
+## Security note
+The Streamlabs API token is stored **in plain text** in `config.json` next to the application (the file is created automatically and access is restricted to your user where the OS allows it). Anyone with access to that file can read your token, so keep it safe.
+
 ## Usage
 1. Run the application.
-2. click on the "Load from PC" button if you have Streamlabs installed on your computer and you are logged in with your TikTok account in Streamlabs, otherwise click on the "Login from Web" button.
+2. click on the "Load from PC" button if you have Streamlabs installed on your computer and you are logged in with your TikTok account in Streamlabs, otherwise click on the "Load from Web" button.
 3. Select stream title and category.
 4. Click on "Save Config" button to save the token, title and category.
 5. Click on the "Go Live" button.

@@ -1,12 +1,14 @@
+from __future__ import annotations
+
+import base64
 import hashlib
 import json
 import os
-import base64
-import socket
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
+
 import requests
 
 
@@ -33,17 +35,6 @@ class TokenRetriever:
         """SHA-256 of the verifier, base64url-encoded (no padding)."""
         digest = hashlib.sha256(verifier.encode()).digest()
         return base64.urlsafe_b64encode(digest).decode().rstrip("=")
-
-    # ------------------------------------------------------------------ #
-    #  Port helper                                                         #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _find_free_port() -> int:
-        """Bind to port 0 and let the OS pick a free ephemeral port."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
 
     # ------------------------------------------------------------------ #
     #  Local callback server                                               #
@@ -82,12 +73,6 @@ class TokenRetriever:
 
         return _CallbackHandler
 
-    def _start_callback_server(self, port: int) -> HTTPServer:
-        server = HTTPServer(("127.0.0.1", port), self._make_handler())
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        return server
-
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
     # ------------------------------------------------------------------ #
@@ -103,7 +88,10 @@ class TokenRetriever:
         Returns:
             The oauth_token string on success, or None on failure.
         """
-        port = self._find_free_port()
+        # Bind directly to an ephemeral port chosen by the OS — this removes
+        # the find-port-then-bind race (TOCTOU) of the previous implementation.
+        server = HTTPServer(("127.0.0.1", 0), self._make_handler())
+        port = server.server_address[1]
 
         auth_url = (
             f"https://streamlabs.com/slobs/login?"
@@ -112,7 +100,8 @@ class TokenRetriever:
             f"&code_challenge={self.code_challenge}&code_flow=true"
         )
 
-        server = self._start_callback_server(port)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
 
         print(f"Opening browser for Streamlabs login (callback on port {port})…")
         webbrowser.open(auth_url)
@@ -179,6 +168,8 @@ class TokenRetriever:
             print(f"Streamlabs reported failure: {data}")
             return None
 
-        token = data["data"].get("oauth_token")
-        print(f"Got Streamlabs OAuth token: {token}")
+        token = (data.get("data") or {}).get("oauth_token")
+        # NOTE: never print the token itself — it is a secret and would leak
+        # into console output / build logs.
+        print("Got Streamlabs OAuth token.")
         return token

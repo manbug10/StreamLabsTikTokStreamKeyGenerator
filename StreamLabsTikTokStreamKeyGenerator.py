@@ -348,7 +348,20 @@ class StreamApp(QMainWindow):
             self._token_timer.start()
         else:
             self._token_timer.stop()
+            self._search_timer.stop()
             self.go_live_btn.setEnabled(False)
+            # Token removed: drop the session and any in-flight account info,
+            # clear the stale fields and stop persisting the old token.
+            if self.stream is not None or self.tiktok_username.text():
+                self.stream = None
+                self._account_gen += 1
+                self.tiktok_username.clear()
+                self.app_status.clear()
+                self.can_go_live.clear()
+                for widget in (self.stream_title, self.game_category, self.mature_checkbox):
+                    widget.setEnabled(False)
+                self.suggestions_list.hide()
+                self.save_config(False)
 
     def load_config(self):
         try:
@@ -404,6 +417,7 @@ class StreamApp(QMainWindow):
             ).start()
         else:
             self.stream = None
+            self._account_gen += 1  # invalidate any in-flight account info
         self.save_config(False)
 
     def _load_account_worker(self, stream, gen):
@@ -432,7 +446,10 @@ class StreamApp(QMainWindow):
 
         for widget in (self.stream_title, self.game_category, self.mature_checkbox):
             widget.setEnabled(can_go_live)
-        self.go_live_btn.setEnabled(can_go_live and bool(self.token_entry.text()))
+        # keep Go Live disabled while a live stream started by this session
+        # is still running, even if a refresh re-reports can_be_live = True
+        live_active = self.end_live_btn.isEnabled()
+        self.go_live_btn.setEnabled(can_go_live and bool(self.token_entry.text()) and not live_active)
 
         self.fetch_game_mask_id(self.game_category.text())
 
@@ -613,11 +630,19 @@ class StreamApp(QMainWindow):
     def update_suggestions_list(self, categories):
         self.suggestions_list.clear()
         for category in categories:
-            self.suggestions_list.addItem(QListWidgetItem(category['full_name']))
+            name = category.get('full_name') if isinstance(category, dict) else None
+            if name:  # skip malformed entries instead of crashing
+                self.suggestions_list.addItem(QListWidgetItem(name))
         self.suggestions_list.setVisible(bool(categories))
 
     def handle_suggestion_selected(self, item):
+        # blockSignals avoids the textChanged handler re-arming the search
+        # timer, which would re-show the suggestions list right after the
+        # user picked one.
+        self.game_category.blockSignals(True)
         self.game_category.setText(item.text())
+        self.game_category.blockSignals(False)
+        self._search_timer.stop()
         self.fetch_game_mask_id(item.text())
         self.suggestions_list.hide()
 
